@@ -1,0 +1,84 @@
+stage 'CI'
+node {
+	checkout scm
+    //git branch: 'jenkins2-course', 
+    //    url: 'https://github.com/g0t4/solitaire-systemjs-course'
+
+    // pull dependencies from npm
+    // on unix use: sh 'npm install'
+    bat 'npm install'
+
+    // stash code & dependencies to expedite subsequent testing
+    // and ensure same code & dependencies are used throughout the pipeline
+    // stash is a temporary archive
+    stash name: 'everything', 
+          excludes: 'test-results\\**', 
+          includes: '**'
+    
+    // test with PhantomJS for "fast" "generic" results
+    // on unix use: sh 'npm run test-single-run -- --browsers PhantomJS'
+    bat 'npm run test-single-run -- --browsers PhantomJS'
+    
+    // archive karma test results (karma is configured to export junit xml files)
+    step([$class: 'JUnitResultArchiver', 
+          testResults: 'test-results/**/test-results.xml'])
+    
+}
+
+// demoing a second agent
+node('windows') {
+    // on unix use: ls
+    bat 'dir'
+    // on unix rm -rf *
+    bat 'del /S /Q *'
+    unstash 'everything'
+    bat 'dir'
+    //bat 'npm run test-single-run -- --browsers Chrome'
+}
+
+// parallel integration testing
+stage 'Browse Testing'
+parallel chrome: {
+    // do something
+    runTests("Chrome")
+}, firefox: {
+    // do something else
+    runTests("Firefox")
+}
+
+def runTests(browser) {
+    node {
+        bat 'del /S /Q *'
+        unstash 'everything'
+        bat "npm run test-single-run -- --browsers ${browser}"
+        step([$class: 'JUnitResultArchiver', 
+          testResults: 'test-results/**/test-results.xml'])
+    }
+}
+
+node {
+    // notify by email, auth to deploy
+    notify("Deploy to staging?")
+}
+input 'Deploy to staging?'
+
+// limit concurrency so we don't perform simultaneous deploys 
+stage name: 'Deploy', concurrency: 1
+node {
+    // write build number to index page so we can see this update
+    sh "echo '<h1>${env.BUILD_DISPLAY_NAME}</h1>' >> app/index.html"
+    
+    // deploy to a docker container mapped to port 3000
+    sh 'docker-compose up -d --build'
+    
+    notify 'Solitaire Deployed!'
+}
+
+def notify(status){
+    emailext (
+      to: "wesmdemos@gmail.com",
+      subject: "${status}: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+      body: """<p>${status}: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]':</p>
+        <p>Check console output at <a href='${env.BUILD_URL}'>${env.JOB_NAME} [${env.BUILD_NUMBER}]</a></p>""",
+    )
+}
